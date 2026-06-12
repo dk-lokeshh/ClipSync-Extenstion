@@ -7,10 +7,17 @@ import Header from './components/Header';
 
 function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState(() => {
+    try {
+      const cached = localStorage.getItem('cachedUser');
+      return cached ? JSON.parse(cached) : null;
+    } catch (e) {
+      return null;
+    }
+  });
   const [isAuthLoading, setIsAuthLoading] = useState(false);
-  const [authMode, setAuthMode] = useState(null); // 'room' or 'google'
-  const [roomId, setRoomId] = useState('');
+  const [authMode, setAuthMode] = useState(() => localStorage.getItem('authMode') || null); // 'room' or 'google'
+  const [roomId, setRoomId] = useState(() => localStorage.getItem('roomId') || '');
   const [inputRoomId, setInputRoomId] = useState('');
   const [history, setHistory] = useState([]);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -34,21 +41,52 @@ function App() {
   // Listen for Firebase auth state changes
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
+      if (currentUser) {
+        const userPayload = {
+          uid: currentUser.uid,
+          email: currentUser.email,
+          displayName: currentUser.displayName,
+          photoURL: currentUser.photoURL,
+        };
+        setUser(userPayload);
+        localStorage.setItem('cachedUser', JSON.stringify(userPayload));
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+          chrome.storage.local.set({ cachedUser: userPayload });
+        }
+      } else {
+        if (authMode === 'google') {
+          setUser(null);
+          setAuthMode(null);
+          localStorage.removeItem('cachedUser');
+          localStorage.removeItem('authMode');
+          if (typeof chrome !== 'undefined' && chrome.storage) {
+            chrome.storage.local.remove(['cachedUser', 'authMode']);
+          }
+        }
+      }
       setIsAuthLoading(false);
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [authMode]);
 
   // Handle Google Sign In
   const handleSignIn = async () => {
     setIsAuthLoading(true);
     try {
-      await signInWithGoogle();
+      const signedInUser = await signInWithGoogle();
       setAuthMode('google');
+      const userPayload = {
+        uid: signedInUser.uid,
+        email: signedInUser.email,
+        displayName: signedInUser.displayName,
+        photoURL: signedInUser.photoURL,
+      };
+      setUser(userPayload);
+      localStorage.setItem('authMode', 'google');
+      localStorage.setItem('cachedUser', JSON.stringify(userPayload));
       if (typeof chrome !== 'undefined' && chrome.storage) {
-        chrome.storage.local.set({ authMode: 'google' });
+        chrome.storage.local.set({ authMode: 'google', cachedUser: userPayload });
       }
     } catch (error) {
       console.error('Sign in failed:', error);
@@ -62,9 +100,16 @@ function App() {
       await signOutUser();
       setRoomId('');
       setAuthMode(null);
+      setUser(null);
       setHistory([]);
+      
+      // Clear localStorage
+      localStorage.removeItem('roomId');
+      localStorage.removeItem('authMode');
+      localStorage.removeItem('cachedUser');
+      
       if (typeof chrome !== 'undefined' && chrome.storage) {
-        chrome.storage.local.remove(['roomId', 'authMode']);
+        chrome.storage.local.remove(['roomId', 'authMode', 'cachedUser']);
       }
     } catch (error) {
       console.error('Sign out failed:', error);
@@ -85,15 +130,21 @@ function App() {
     };
   }, []);
 
-  // Load auth mode and Room ID from chrome storage on mount
+  // Load auth mode and Room ID from chrome storage on mount as safety sync check
   useEffect(() => {
     if (typeof chrome !== 'undefined' && chrome.storage) {
-      chrome.storage.local.get(['roomId', 'authMode'], (result) => {
+      chrome.storage.local.get(['roomId', 'authMode', 'cachedUser'], (result) => {
         if (result.authMode) {
           setAuthMode(result.authMode);
+          localStorage.setItem('authMode', result.authMode);
         }
         if (result.roomId) {
           setRoomId(result.roomId);
+          localStorage.setItem('roomId', result.roomId);
+        }
+        if (result.cachedUser) {
+          setUser(result.cachedUser);
+          localStorage.setItem('cachedUser', JSON.stringify(result.cachedUser));
         }
       });
     }
@@ -138,8 +189,18 @@ function App() {
       const trimmedId = inputRoomId.trim();
       setRoomId(trimmedId);
       setAuthMode('room');
+      
+      // Clear any Google cache to prevent conflicts
+      setUser(null);
+      localStorage.removeItem('cachedUser');
+      
+      // Save to localStorage
+      localStorage.setItem('roomId', trimmedId);
+      localStorage.setItem('authMode', 'room');
+      
       if (typeof chrome !== 'undefined' && chrome.storage) {
         chrome.storage.local.set({ roomId: trimmedId, authMode: 'room' });
+        chrome.storage.local.remove(['cachedUser']);
       }
     }
   };
@@ -193,8 +254,14 @@ function App() {
     setRoomId('');
     setAuthMode(null);
     setHistory([]);
+    
+    // Clear localStorage
+    localStorage.removeItem('roomId');
+    localStorage.removeItem('authMode');
+    localStorage.removeItem('cachedUser');
+    
     if (typeof chrome !== 'undefined' && chrome.storage) {
-      chrome.storage.local.remove(['roomId', 'authMode']);
+      chrome.storage.local.remove(['roomId', 'authMode', 'cachedUser']);
     }
   };
 
